@@ -1,0 +1,219 @@
+name: deploy-pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC -> AWS
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  PROJECT: cloud-deploy
+  ENVIRONMENT: production
+  TF_VERSION: 1.10.5
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---------------------------------------------------------------- 1. TEST
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: app/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Lint
+        run: flake8 .
+      - name: Unit tests with coverage gate
+        run: pytest --cov=app --cov-report=term-missing --cov-fail-under=80
+
+  # ---------------------------------------------------------- 2. SECURITY
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for secret scanning
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}  # required for org-owned repos
+
+      - name: SAST (bandit)
+        run: |
+          pip install bandit==1.7.10
+          bandit -r app/app.py -ll
+
+      - name: Dependency audit (pip-audit)
+        run: |
+          pip install pip-audit==2.7.3
+          pip-audit -r app/requirements.txt
+
+      - name: IaC scan (Checkov)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra
+          framework: terraform
+          quiet: true
+          soft_fail: false
+          # Accepted trade-offs for this demo (tasks in public subnets, HTTP without a cert, etc.)
+          skip_check: CKV_AWS_150,CKV_AWS_91,CKV_AWS_131,CKV_AWS_2,CKV_AWS_103,CKV_AWS_338,CKV_AWS_158,CKV_AWS_136,CKV_AWS_65,CKV_AWS_333,CKV2_AWS_28,CKV2_AWS_11,CKV2_AWS_12,CKV_AWS_23,CKV_AWS_382,CKV_AWS_378
+
+  # ------------------------------------------------------------ 3. BUILD
+  build:
+    needs: [test, security]
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The ECR repo is created by Terraform; create it first so we can push.
+      - name: Configure AWS credentials
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Ensure ECR repository exists
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        working-directory: infra
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ env.PROJECT }}/${{ env.ENVIRONMENT }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+          terraform apply -auto-approve -input=false \
+            -target=aws_ecr_repository.app \
+            -var="image_tag=${{ github.sha }}"
+
+      - name: Build image
+        run: docker build -t app:${{ github.sha }} app
+
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: app:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Login to ECR
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push image
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          REMOTE="${{ steps.ecr.outputs.registry }}/${{ env.PROJECT }}-${{ env.ENVIRONMENT }}:${{ github.sha }}"
+          docker tag app:${{ github.sha }} "$REMOTE"
+          docker push "$REMOTE"
+
+  # ----------------------------------------------------- PR: TERRAFORM PLAN
+  plan:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: [test, security]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Terraform fmt / init / validate / plan
+        working-directory: infra
+        run: |
+          terraform fmt -check -recursive
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ env.PROJECT }}/${{ env.ENVIRONMENT }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+          terraform validate
+          terraform plan -input=false -lock-timeout=60s -var="image_tag=${{ github.sha }}"
+
+  # ------------------------------------------------------------ 4. DEPLOY
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production   # add required reviewers in repo settings for a manual approval gate
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false   # lets `terraform output -raw` return clean values
+
+      - name: Terraform init
+        working-directory: infra
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ env.PROJECT }}/${{ env.ENVIRONMENT }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+
+      - name: Terraform validate and apply (provision + rolling deploy)
+        working-directory: infra
+        run: |
+          terraform validate
+          terraform apply -auto-approve -input=false -lock-timeout=300s \
+            -var="image_tag=${{ github.sha }}" \
+            -var="alert_email=${{ vars.ALERT_EMAIL }}" \
+            -var="certificate_arn=${{ vars.CERTIFICATE_ARN }}"
+
+      - name: Read outputs
+        id: tf
+        working-directory: infra
+        run: |
+          echo "url=$(terraform output -raw app_url)" >> "$GITHUB_OUTPUT"
+          echo "dashboard=$(terraform output -raw dashboard_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test (also detects automatic rollback)
+        run: ./scripts/smoke_test.sh "${{ steps.tf.outputs.url }}" "${{ github.sha }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deployment"
+            echo "- Version: \`${{ github.sha }}\`"
+            echo "- URL: ${{ steps.tf.outputs.url }}"
+            echo "- Dashboard: ${{ steps.tf.outputs.dashboard }}"
+          } >> "$GITHUB_STEP_SUMMARY"
