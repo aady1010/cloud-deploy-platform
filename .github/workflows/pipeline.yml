@@ -120,7 +120,7 @@ jobs:
             -var="image_tag=${{ github.sha }}"
 
       - name: Build image
-        run: docker build -t app:${{ github.sha }} app
+        run: docker build -f Dockerfile -t app:${{ github.sha }} app
 
       - name: Scan image (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0
