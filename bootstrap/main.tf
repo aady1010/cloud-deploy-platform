@@ -10,7 +10,7 @@ terraform {
 
 variable "aws_region" {
   type    = string
-  default = "ap-south-1"
+  default = "ap-southeast-2"
 }
 variable "github_repo" {
   type        = string
