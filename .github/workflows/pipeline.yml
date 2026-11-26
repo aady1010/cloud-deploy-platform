@@ -92,27 +92,15 @@ jobs:
       tag: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
-      - name: Debug AWS_ROLE_ARN format
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        run: |
-          python3 -c '
-          import os, re
-          arn = os.environ.get("ROLE_ARN", "")
-          print("Length:", len(arn))
-          print("Starts with arn:aws:iam:: :", arn.startswith("arn:aws:iam::"))
-          print("Contains :role/ :", ":role/" in arn)
-          print("Matches strict IAM Role ARN regex:", bool(re.match(r"^arn:aws:iam::\d{12}:role/[\w+=,.@/-]+$", arn)))
-          '
-        env:
-          ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+        
 
       # The ECR repo is created by Terraform; create it first so we can push.
       - name: Configure AWS credentials
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+           aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -164,8 +152,9 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+           aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -197,8 +186,9 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+           aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
