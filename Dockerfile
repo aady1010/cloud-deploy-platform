@@ -11,4 +11,4 @@ RUN useradd --system --uid 10001 appuser
 USER 10001
 EXPOSE 8080
 # One worker + threads keeps in-process Prometheus metrics consistent.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--access-logfile", "-", "app:app"]
+CMD ["gunicorn", "--worker-tmp-dir", "/dev/shm", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--access-logfile", "-", "app:app"]
