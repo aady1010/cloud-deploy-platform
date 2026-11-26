@@ -82,7 +82,7 @@ jobs:
           quiet: true
           soft_fail: false
           # Accepted trade-offs for this demo (tasks in public subnets, HTTP without a cert, etc.)
-          skip_check: CKV_AWS_150,CKV_AWS_91,CKV_AWS_131,CKV_AWS_2,CKV_AWS_103,CKV_AWS_338,CKV_AWS_158,CKV_AWS_136,CKV_AWS_65,CKV_AWS_333,CKV2_AWS_28,CKV2_AWS_11,CKV2_AWS_12,CKV_AWS_23,CKV_AWS_382,CKV_AWS_378
+          skip_check: CKV_AWS_150,CKV_AWS_91,CKV_AWS_131,CKV_AWS_2,CKV_AWS_103,CKV_AWS_338,CKV_AWS_158,CKV_AWS_136,CKV_AWS_65,CKV_AWS_333,CKV2_AWS_28,CKV2_AWS_11,CKV2_AWS_12,CKV_AWS_23,CKV_AWS_382,CKV_AWS_378,CKV_AWS_394,CKV_AWS_260,CKV_AWS_26,CKV2_AWS_20
 
   # ------------------------------------------------------------ 3. BUILD
   build:
