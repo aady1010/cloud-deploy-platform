@@ -218,9 +218,9 @@ jobs:
         run: |
           echo "url=$(terraform output -raw app_url)" >> "$GITHUB_OUTPUT"
           echo "dashboard=$(terraform output -raw dashboard_url)" >> "$GITHUB_OUTPUT"
-
+        
       - name: Smoke test (also detects automatic rollback)
-        run: ./scripts/smoke_test.sh "${{ steps.tf.outputs.url }}" "${{ github.sha }}"
+        run: bash ./scripts/smoke_test.sh "${{ steps.tf.outputs.url }}" "${{ github.sha }}"
 
       - name: Summary
         if: always()
